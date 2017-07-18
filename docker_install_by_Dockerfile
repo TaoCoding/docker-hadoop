@@ -1,0 +1,243 @@
+1.为了后面配置各节点之间的SSH免密码登陆，需要在pull下的centos镜像库种安装SSH, 
+这里利用 Dockerfile 文件来创建镜像
+http://blog.csdn.net/justhavetry/article/details/72901329
+http://blog.csdn.net/rznice/article/details/52211620
+
+docker build -t taocoding:centos7-ssh -f /usr/local/DockerImagesFiles/Dockerfile .
+
+2.在构建Hadoop镜像库的Dockerfile所在目录下，上传已经下载的 jdk-8u131-Linux-x64.tar.gz, Hadoop-2.7.3.tar.gz,Scala-2.11.8.tgz,Spark-2.2.0-bin-hadoop2.7.tgz
+
+https://mirrors.tuna.tsinghua.edu.cn/apache/hadoop/common/hadoop-2.7.3/hadoop-2.7.3.tar.gz
+https://downloads.lightbend.com/scala/2.11.8/scala-2.11.8.tgz
+https://d3kbcqa49mib13.cloudfront.net/spark-2.2.0-bin-hadoop2.7.tgz
+
+
+3. docker build -t taocoding:centos7-hadoop -f /usr/local/DockerImagesFiles/Dockerfile .
+
+4. #创建master容器，50070和8088，8080是用来在浏览器中访问hadoop yarn spark #WEB界面，这里分别映射到物理机的50070和8088，8080端口。
+
+#重点注意：容器启动后，映射比较麻烦，最好在这里映射。
+docker run   -d -P -p 50070:50070 -p 8088:8088 -p 8080:8080 --name master -h master --add-host slave01:172.17.0.3 --add-host slave02:172.17.0.4 hadoop
+
+#创建slave01容器,在容器host文件，添加hostname，并配置其他节点主机名称和IP地址
+docker run   -d -P --name slave01 -h slave01 --add-host master:172.17.0.2 --add-host slave02:172.17.0.4  hadoop
+
+#创建slave02容器
+docker run   -d -P --name slave02 -h slave02 --add-host master:172.17.0.2 --add-host slave01:172.17.0.3  hadoop
+
+5. 进入终端 
+docker exec -it master /bin/bash
+docker exec -it slave01 /bin/bash
+docker exec -it slave02 /bin/bash
+
+#更改hadoop和spark2.2.0目录所属用户【需要root用户且三个容器都要执行】
+chown -R hdfs:hdfs /usr/local/hadoop
+chown -R hdfs:hdfs /usr/local/spark2.2.0
+
+6.#切换到hdfs账号
+su hdfs
+#生成hdfs账号的key，执行后会有多个输入提示，不用输入任何内容，全部直接回车即可
+ssh-keygen
+#拷贝到其他节点
+ssh-copy-id -i /home/hdfs/.ssh/id_rsa -p 22 hdfs@master
+ssh-copy-id -i /home/hdfs/.ssh/id_rsa -p 22 hdfs@slave01
+ssh-copy-id -i /home/hdfs/.ssh/id_rsa -p 22 hdfs@slave02
+#验证是否设置成功
+ssh slave01
+
+7.进入master容器的hadoop配置目录，需要配置有以下7个文件：hadoop-env.sh，slaves，core-site.xml，hdfs-site.xml，maprd-site.xml，yarn-site.xml
+2.2.1 在hadoop-env.sh中配置JAVA_HOME
+
+export JAVA_HOME=/usr/local/jdk1.8
+
+2.2.2 在slaves中配置子节点主机名
+
+进入slaves文件，添加下面名称
+
+slave01
+slave02
+
+2.2.3 修改core-site.xml
+
+<configuration>
+    <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://master:9000/</value>
+    </property>
+    <property>
+         <name>hadoop.tmp.dir</name>
+         <value>file:/usr/local/hadoop/tmp</value>
+    </property>
+</configuration>
+
+
+2.2.4 修改hdfs-site.xml
+
+<configuration>
+    <property>
+        <name>dfs.namenode.secondary.http-address</name>
+        <value>master:9001</value>
+    </property>
+    <property>
+        <name>dfs.webhdfs.enabled</name>
+        <value>true</value>
+    </property>
+    <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>file:/usr/local/hadoop/dfs/name</value>
+    </property>
+    <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>file:/usr/local/hadoop/dfs/data</value>
+    </property>
+    <property>
+        <name>dfs.replication</name>
+        <value>2</value>
+    </property>
+</configuration>
+
+
+
+2.2.5 修改mapred-site.xml
+2.2.5.1 复制mapred-site.xml文件
+
+#这个文件默认不存在，需要从 mapred-site.xml.template 复制过来
+cp mapred-site.xml.template mapred-site.xml
+
+2.2.5.2 修改mapred-site.xml
+
+<configuration>
+    <property>
+        <name>mapreduce.framework.name</name>
+        <value>yarn</value>
+    </property>
+</configuration>
+
+2.2.6 修改yarn-site.xml
+
+<configuration>
+
+<!-- Site specific YARN configuration properties -->
+<property>
+        <name>yarn.nodemanager.aux-services</name>
+        <value>mapreduce_shuffle</value>
+    </property>
+    <property>
+        <name>yarn.nodemanager.aux-services.mapreduce.shuffle.class</name>
+        <value>org.apache.hadoop.mapred.ShuffleHandler</value>
+    </property>
+    <property>
+        <name>yarn.resourcemanager.address</name>
+        <value>master:8032</value>
+    </property>
+    <property>
+        <name>yarn.resourcemanager.scheduler.address</name>
+        <value>master:8030</value>
+    </property>
+    <property>
+        <name>yarn.resourcemanager.resource-tracker.address</name>
+        <value>master:8035</value>
+    </property>
+    <property>
+        <name>yarn.resourcemanager.admin.address</name>
+        <value>master:8033</value>
+    </property>
+    <property>
+        <name>yarn.resourcemanager.webapp.address</name>
+        <value>master:8088</value>
+    </property>
+</configuration>
+
+
+2.2.7 master容器配置的hadoop目录分别分发到slave01，slave02节点
+
+scp -r hadoop  slave01:/usr/local/
+scp -r hadoop  slave02:/usr/local/
+
+
+8. 启动HDFS集群，验证是否搭建成功
+
+#如果配置环境变量，就直接执行
+hdfs namenode -format     #格式化namenode
+start-dfs.sh               #启动dfs 
+
+# 在 master上执行jps 
+$ jps
+#运行结果应该包含下面的进程
+1200 SecondaryNameNode
+3622 Jps
+988 NameNode
+
+# 在 slave上执行jps 
+$ jps   
+#运行结果应该包含下面的进程
+2213 Jps
+1962 DataNode
+
+
+9. 浏览器输入http://localhost:50070(宿主机) ，可以浏览hadoop node管理界面 
+
+10. 在Docker上配置三节点Yarn集群
+
+上面已经配置成功,直接启动yarn集群
+
+#启动yarn
+start-yarn.sh  
+
+浏览器输入http://localhost:8088/cluster 可以浏览节点；
+
+
+
+
+11. 在Docker上配置三节点spark集群
+3.1 配置spark
+
+进入master容器的spark配置目录，需要配置有两个文件：spark-env.sh，slaves
+3.1.1 配置spark-env.sh
+
+cd /usr/local/spark2.2.0/conf
+ #从配置模板复制
+cp spark-env.sh.template spark-env.sh  
+#添加配置内容
+vi spark-env.sh    
+
+在spark-env.sh末尾添加以下内容：
+
+export SCALA_HOME=/usr/local/scala2.11.8
+export JAVA_HOME=/usr/local/jdk1.8
+export HADOOP_HOME=/usr/local/hadoop
+export HADOOP_CONF_DIR=$HADOOP_HOME/etc/hadoop
+SPARK_MASTER_IP=master
+SPARK_LOCAL_DIRS=/usr/local/spark2.2.0
+SPARK_DRIVER_MEMORY=1G
+
+3.1.2 在slaves文件下填上slave主机名
+
+slave01
+slave02
+
+3.1.3 master容器配置的spark目录分别分发到slave01，slave02节点
+
+scp -r spark2.2.0  slave01:/usr/local/
+scp -r spark2.2.0  slave02:/usr/local/
+
+
+3.2 启动spark集群
+
+start-all.sh
+
+浏览Spark的Web管理页面： http://localhost:8080 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
